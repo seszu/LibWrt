@@ -3,8 +3,12 @@ name: Build LibWrt Arthur
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build JDCloud RE-SS-01 (Arthur)
     runs-on: ubuntu-22.04
     timeout-minutes: 360
 
@@ -41,37 +45,22 @@ jobs:
           ./scripts/feeds install -a
 
 
-      - name: Find Arthur profile
+      - name: Configure Arthur target
         run: |
-          echo "Search JDCloud device"
-
-          make info | grep -i jdcloud
-
-          PROFILE=$(make info | grep -i jdcloud | head -1 | awk '{print $1}')
-
-          echo "PROFILE=$PROFILE"
-
-          echo "PROFILE=$PROFILE" >> $GITHUB_ENV
-
-
-      - name: Configure
-        run: |
-          echo "Using profile:"
-          echo $PROFILE
-
-          echo "CONFIG_TARGET_qualcommax=y" > .config
-          echo "CONFIG_TARGET_qualcommax_ipq60xx=y" >> .config
-          echo "$PROFILE=y" >> .config
-
-          echo "CONFIG_PACKAGE_kmod-tun=y" >> .config
-          echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y" >> .config
-          echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
+          cat > .config <<'EOF'
+          CONFIG_TARGET_qualcommax=y
+          CONFIG_TARGET_qualcommax_ipq60xx=y
+          CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y
+          CONFIG_PACKAGE_kmod-tun=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_TARGET_ROOTFS_SQUASHFS=y
+          EOF
 
           make defconfig
 
-          echo "===== CONFIG ====="
-          grep -i jdcloud .config || true
-          grep kmod-tun .config || true
+          echo "===== Selected target ====="
+          grep -E '^CONFIG_TARGET_(qualcommax|qualcommax_ipq60xx|qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01)=y$' .config
+          grep -q '^CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y$' .config
 
 
       - name: Download
@@ -86,11 +75,11 @@ jobs:
 
       - name: Collect firmware
         run: |
-          mkdir firmware
+          mkdir -p firmware
 
-          find bin/targets \
+          find bin/targets/qualcommax/ipq60xx \
           -type f \
-          \( -name "*.bin" -o -name "*.itb" \) \
+          \( -name "*.bin" -o -name "*.itb" -o -name "*.ubi" -o -name "*.img.gz" \) \
           -exec cp {} firmware/ \;
 
 
@@ -102,3 +91,4 @@ jobs:
         with:
           name: LibWrt-Arthur-firmware
           path: firmware
+          if-no-files-found: error
