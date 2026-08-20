@@ -1,0 +1,233 @@
+name: Build LibWrt for JDCloud Arthur
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-libwrt-arthur
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build JDCloud RE-SS-01
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    env:
+      TZ: Asia/Shanghai
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: 25.12-nss
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          echo "========== Before =========="
+          df -h
+
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -a -f || true
+
+          echo "========== After =========="
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            ack \
+            antlr3 \
+            asciidoc \
+            autoconf \
+            automake \
+            autopoint \
+            binutils \
+            bison \
+            build-essential \
+            bzip2 \
+            ccache \
+            cmake \
+            cpio \
+            curl \
+            device-tree-compiler \
+            fastjar \
+            flex \
+            gawk \
+            gettext \
+            gcc-multilib \
+            g++-multilib \
+            git \
+            gperf \
+            haveged \
+            help2man \
+            intltool \
+            libc6-dev-i386 \
+            libelf-dev \
+            libglib2.0-dev \
+            libgmp3-dev \
+            libltdl-dev \
+            libmpc-dev \
+            libmpfr-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libreadline-dev \
+            libfuse-dev \
+            libssl-dev \
+            libtool \
+            lrzsz \
+            genisoimage \
+            msmtp \
+            nano \
+            ninja-build \
+            p7zip \
+            p7zip-full \
+            patch \
+            pkgconf \
+            python3 \
+            python3-pip \
+            libpython3-dev \
+            qemu-utils \
+            rsync \
+            scons \
+            squashfs-tools \
+            subversion \
+            swig \
+            texinfo \
+            uglifyjs \
+            unzip \
+            vim \
+            wget \
+            xmlto \
+            xxd \
+            zlib1g-dev
+
+          sudo apt-get clean
+
+      - name: Cache downloads and ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            dl
+            .ccache
+          key: libwrt-arthur-${{ runner.os }}-${{ hashFiles('feeds.conf.default') }}
+          restore-keys: |
+            libwrt-arthur-${{ runner.os }}-
+
+      - name: Update feeds
+        run: |
+          chmod +x scripts/feeds
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Generate Arthur config
+        run: |
+          cat > .config <<'EOF'
+          CONFIG_TARGET_qualcommax=y
+          CONFIG_TARGET_qualcommax_ipq60xx=y
+
+          CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y
+
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+
+          CONFIG_CCACHE=y
+
+          CONFIG_TARGET_ROOTFS_SQUASHFS=y
+          EOF
+
+          make defconfig
+
+          echo "========== Target =========="
+          grep -E 'CONFIG_TARGET_(qualcommax|DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01)' .config || true
+
+          echo "========== NSS =========="
+          grep -E 'CONFIG_PACKAGE_kmod-qca-nss|CONFIG_NSS_' .config | head -100 || true
+
+          echo "========== WiFi =========="
+          grep -E 'jdcloud_re-ss-01|ath11k' .config | head -100 || true
+
+      - name: Download packages
+        run: |
+          make download -j$(nproc)
+
+          find dl -type f -size -1024c -print -delete || true
+
+      - name: Build firmware
+        run: |
+          echo "CPU threads: $(nproc)"
+          echo "========== Start building =========="
+
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Check firmware
+        run: |
+          echo "========== Firmware files =========="
+
+          find bin/targets/qualcommax/ipq60xx \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f  %k KB\n' \
+            | sort
+
+          echo
+          echo "========== Arthur firmware =========="
+
+          find bin/targets/qualcommax/ipq60xx \
+            -maxdepth 1 \
+            -type f \
+            -name '*jdcloud_re-ss-01*' \
+            -printf '%f  %k KB\n'
+
+          if ! find bin/targets/qualcommax/ipq60xx \
+            -maxdepth 1 \
+            -type f \
+            -name '*jdcloud_re-ss-01*' \
+            | grep -q .; then
+            echo "ERROR: Arthur firmware not found!"
+            exit 1
+          fi
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p firmware
+
+          cp -f \
+            bin/targets/qualcommax/ipq60xx/*jdcloud_re-ss-01* \
+            firmware/ 2>/dev/null || true
+
+          cp -f \
+            bin/targets/qualcommax/ipq60xx/*.buildinfo \
+            firmware/ 2>/dev/null || true
+
+          cp -f \
+            bin/targets/qualcommax/ipq60xx/*.manifest \
+            firmware/ 2>/dev/null || true
+
+          cp -f \
+            bin/targets/qualcommax/ipq60xx/sha256sums \
+            firmware/ 2>/dev/null || true
+
+          cp -f .config firmware/build.config
+
+          echo "========== Upload files =========="
+          ls -lh firmware
+
+          echo "BUILD_DATE=$(date +'%Y%m%d-%H%M')" >> "$GITHUB_ENV"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibWrt-Arthur-${{ env.BUILD_DATE }}
+          path: firmware/
+          retention-days: 30
+          if-no-files-found: error
